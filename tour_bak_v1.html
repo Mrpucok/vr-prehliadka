@@ -1,0 +1,153 @@
+<!doctype html><html lang="sk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VR prehliadka domu</title>
+<style>
+body{margin:0;overflow:hidden;font-family:system-ui,sans-serif;background:#000}
+#ui{position:absolute;left:0;top:0;right:0;padding:12px;display:flex;flex-wrap:wrap;gap:10px;z-index:5;pointer-events:none}
+#ui button{pointer-events:auto;font-size:20px;padding:14px 18px;border:0;border-radius:12px;background:#ffffffe6;color:#111;box-shadow:0 2px 8px #0005}
+#ui button.on{background:#1e6fd9;color:#fff}
+#help{position:absolute;left:12px;bottom:12px;max-width:560px;color:#fff;background:#000a;padding:12px 16px;border-radius:12px;font-size:17px;line-height:1.45;z-index:5}
+#VRButton{font-size:28px!important;padding:22px 44px!important;bottom:24px!important;border-radius:16px!important;background:#1e6fd9!important;opacity:1!important;border:0!important;width:auto!important;white-space:nowrap!important;left:50%!important;transform:translateX(-50%)}
+#status{position:absolute;right:12px;bottom:12px;color:#fff;background:#000a;padding:8px 12px;border-radius:10px;z-index:5}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script>
+</head><body>
+<div id="ui"></div>
+<div id="help"><b>Ovládanie</b><br>
+🥽 Nasaď okuliare a stlač modré tlačidlo <b>VSTÚPIŤ DO VR</b>.<br>
+👉 <b>Teleport:</b> zamier ovládačom (alebo prstom) na podlahu a stlač spúšť (alebo spoj palec s ukazovákom).<br>
+📋 <b>Menu miest:</b> tlačidlo B/Y alebo zamier na modré tlačidlo MENU na ľavej ruke.<br>
+🏠 <b>Domov:</b> v menu „Domov“ vráti na vstup. Páčky: chôdza / otočenie.</div>
+<div id="status">Načítavam…</div>
+<script type="module">
+import * as THREE from 'three';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import {DRACOLoader} from 'three/addons/loaders/DRACOLoader.js';
+import {KTX2Loader} from 'three/addons/loaders/KTX2Loader.js';
+import {MeshoptDecoder} from 'three/addons/libs/meshopt_decoder.module.js';
+import {RGBELoader} from 'three/addons/loaders/RGBELoader.js';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {VRButton} from 'three/addons/webxr/VRButton.js';
+import {XRControllerModelFactory} from 'three/addons/webxr/XRControllerModelFactory.js';
+import {XRHandModelFactory} from 'three/addons/webxr/XRHandModelFactory.js';
+const P=new URLSearchParams(location.search);
+const MODEL=P.get('model')||'house_photoreal.glb', ALT=P.get('alt');
+const HDR=P.get('hdri')||'meadow_2_1k.hdr';
+const F2=2.96;
+// start points: [label, x, z(plan y, south), floorY, yawDeg]
+const SPOTS=[['🏡 Pred domom',5.75,13.5,0,0],['🌳 Záhrada',-6.0,10.0,0,-53],['🚪 Vstup',5.75,7.3,0,25],['🛋 Obývačka',3.3,6.8,0,52],
+ ['🍳 Kuchyňa',2.5,3.8,0,0],['🛁 Kúpeľňa',6.9,5.0,0,-132],['🛏 Spálňa 1',2.5,4.8,F2,180],['🛏 Spálňa 2',6.9,3.6,F2,180]];
+let spotIdx=parseInt(P.get('start')||'2');
+const status=document.getElementById('status');
+if(P.get('nohelp'))document.getElementById('help').style.display='none';
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
+renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.0;renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.xr.enabled=true;renderer.xr.setReferenceSpaceType('local-floor');renderer.xr.setFoveation(1);
+document.body.appendChild(renderer.domElement);
+const vrb=VRButton.createButton(renderer,{optionalFeatures:['hand-tracking']});document.body.appendChild(vrb);
+new MutationObserver(()=>{if(/ENTER VR/.test(vrb.textContent))vrb.textContent='VSTÚPIŤ DO VR';if(/EXIT VR/.test(vrb.textContent))vrb.textContent='UKONČIŤ VR';if(/NOT SUPPORTED/.test(vrb.textContent))vrb.textContent='VR: otvor v Meta Quest';}).observe(vrb,{childList:true,characterData:true,subtree:true});
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(parseFloat(P.get('fov')||'45'),innerWidth/innerHeight,0.05,500);
+const rig=new THREE.Group();rig.add(camera);scene.add(rig);
+scene.add(new THREE.HemisphereLight(0xffffff,0x6b6455,0.9));
+const sun=new THREE.DirectionalLight(0xfff1dd,1.6);sun.position.set(-10,20,12);scene.add(sun);
+// HDRI sky + environment
+new RGBELoader().load(HDR,t=>{t.mapping=THREE.EquirectangularReflectionMapping;scene.background=t;scene.environment=t;scene.backgroundRotation=new THREE.Euler(0,THREE.MathUtils.degToRad(parseFloat(P.get('hdrirot')||'140')),0);scene.environmentRotation=scene.backgroundRotation;});
+const orbit=new OrbitControls(camera,renderer.domElement);
+// models
+const loader=new GLTFLoader();const draco=new DRACOLoader();draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/libs/draco/');
+loader.setDRACOLoader(draco);loader.setMeshoptDecoder(MeshoptDecoder);
+const ktx2=new KTX2Loader().setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/libs/basis/').detectSupport(renderer);loader.setKTX2Loader(ktx2);
+const models=[],floorTargets=[];let cur=parseInt(P.get('v')||'0');
+const NAMES=[P.get('name0')||'Zariadené',P.get('name1')||'Holodom'];
+window.__scene=()=>scene;
+const LMBASE=P.get('lm')||'',LMC={},LMM={},LMI=parseFloat(P.get('lmi')||'3.14159');
+function prep(m){m.traverse(o=>{if(!o.isMesh)return;floorTargets.push(o);const mt=o.material;
+  if(mt&&/^BAKED/.test(mt.name)){o.material=new THREE.MeshBasicMaterial({map:mt.map,name:mt.name});}  // baked lighting -> unlit
+  let lmN=null;for(let q=o;q&&!lmN;q=q.parent)lmN=q.userData&&q.userData.lightmap;
+  if(lmN&&mt&&o.geometry.attributes.uv1){const b=LMBASE+lmN;if(!LMC[b])LMC[b]=new RGBELoader().loadAsync(b);LMC[b].then(t=>{t.channel=1;t.flipY=P.get('lmflip')==='1';t.colorSpace=THREE.LinearSRGBColorSpace;t.needsUpdate=true;
+    const ms=Array.isArray(o.material)?o.material:[o.material];
+    if(P.get('lmdebug')){o.material=new THREE.MeshBasicMaterial({map:t});window.__lmn=(window.__lmn||0)+1;return;}
+    const key=k=>k.uuid+'|'+b;const out=ms.map(q=>{if(q.isMeshBasicMaterial)return q;if(!LMM[key(q)]){const c=q.clone();c.lightMap=t;c.lightMapIntensity=LMI;c.envMapIntensity=c.metalness>0.5?1.0:parseFloat(P.get('lmenv')||'0.25');const FL={Lawn:0x4f7a2c,Patio:0x9a9288,Linen2:0xd8d2c6};if(FL[c.name]){c.map=null;c.color.setHex(FL[c.name]);}LMM[key(q)]=c;}return LMM[key(q)];});
+    o.material=Array.isArray(o.material)?out:out[0];
+    if(0)ms.forEach(q=>{q.lightMap=t;q.lightMapIntensity=LMI;q.envMapIntensity=parseFloat(P.get('lmenv')||'0.25');q.needsUpdate=true;});
+    window.__lmn=(window.__lmn||0)+1;
+    if(!window.__lm){window.__lm=1;scene.traverse(l=>{if(l.isLight)l.intensity*=parseFloat(P.get('lmlights')||'0.05');});}});}
+  if(mt&&mt.transparent){o.material.depthWrite=false;o.renderOrder=2;}});}
+function setVar(i){cur=i;models.forEach((m,k)=>m&&(m.visible=k===i));buildUI();drawPanel();}
+let done=0;const need=ALT?2:1;
+[MODEL,ALT].filter(Boolean).forEach((u,i)=>loader.load(u,g=>{models[i]=g.scene;prep(g.scene);scene.add(g.scene);if(++done===need){setVar(cur);goSpot(spotIdx);status.textContent='Pripravené';window.__loaded=true;}},
+ x=>{if(x.total)status.textContent='Načítavam '+Math.round(100*x.loaded/x.total)+' %';},e=>{status.textContent='Chyba: '+e.message;window.__error=String(e);}));
+const gp=new THREE.Mesh(new THREE.PlaneGeometry(400,400).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({visible:false}));gp.position.y=-0.05;scene.add(gp);floorTargets.push(gp);
+// spots
+function goSpot(i){spotIdx=i;const [,x,z,y,yaw]=SPOTS[i];const r=THREE.MathUtils.degToRad(yaw);
+ if(renderer.xr.isPresenting){rig.position.set(x,y,z);rig.rotation.y=r;camera.position.set(0,0,0);}
+ else{rig.position.set(0,0,0);rig.rotation.y=0;camera.position.set(x,y+1.6,z);orbit.target.set(x-Math.sin(r)*0.5,y+1.55,z-Math.cos(r)*0.5);orbit.update();}
+ buildUI();}
+window.goSpot=goSpot;window.setVar=setVar;
+if(P.get('cam')){/* preview override */}
+renderer.xr.addEventListener('sessionstart',()=>{goSpot(spotIdx);showPanel(true);});
+renderer.xr.addEventListener('sessionend',()=>goSpot(spotIdx));
+// 2D UI
+const ui=document.getElementById('ui');
+function buildUI(){ui.innerHTML='';SPOTS.forEach((s,i)=>{const b=document.createElement('button');b.textContent=s[0];if(i===spotIdx)b.className='on';b.onclick=()=>goSpot(i);ui.appendChild(b);});
+ const h=document.createElement('button');h.textContent='🏠 Domov';h.onclick=()=>goSpot(2);ui.appendChild(h);
+ if(ALT){const v=document.createElement('button');v.textContent='⇄ '+NAMES[1-cur];v.onclick=()=>setVar(1-cur);ui.appendChild(v);} if(P.get('noui'))ui.style.display='none';}
+// ---------- VR panel ----------
+const cv=document.createElement('canvas');cv.width=1024;cv.height=1024;const cx=cv.getContext('2d');const ptex=new THREE.CanvasTexture(cv);ptex.colorSpace=THREE.SRGBColorSpace;
+const panel=new THREE.Mesh(new THREE.PlaneGeometry(0.8,0.8),new THREE.MeshBasicMaterial({map:ptex,transparent:true,depthTest:false}));panel.renderOrder=10;panel.visible=false;scene.add(panel);
+let ITEMS=[];
+function drawPanel(){ITEMS=[...SPOTS.map((s,i)=>({t:s[0],a:()=>goSpot(i),on:i===spotIdx})),{t:'🏠 Domov',a:()=>goSpot(2)}];
+ if(ALT)ITEMS.push({t:'⇄ '+NAMES[1-cur],a:()=>setVar(1-cur)});ITEMS.push({t:'✖ Zavrieť menu',a:()=>showPanel(false)});
+ cx.clearRect(0,0,1024,1024);cx.fillStyle='#101418e8';cx.beginPath();cx.roundRect(0,0,1024,1024,40);cx.fill();
+ cx.fillStyle='#fff';cx.font='bold 46px sans-serif';cx.fillText('Kam chceš ísť?',40,70);
+ const cols=2,w=462,h=118;ITEMS.forEach((it,i)=>{const c=i%cols,r=Math.floor(i/cols);it.x=40+c*(w+20);it.y=110+r*(h+16);it.w=w;it.h=h;
+  cx.fillStyle=it.hover?'#4d9bff':(it.on?'#1e6fd9':'#ffffff');cx.beginPath();cx.roundRect(it.x,it.y,w,h,22);cx.fill();
+  cx.fillStyle=(it.on||it.hover)?'#fff':'#111';cx.font='44px sans-serif';cx.fillText(it.t,it.x+24,it.y+75);});
+ cx.fillStyle='#ccc';cx.font='30px sans-serif';cx.fillText('Zamier a stlač spúšť / spoj prsty. Teleport: zamier na podlahu.',40,1000);ptex.needsUpdate=true;}
+function showPanel(v){panel.visible=v;if(v){const p=new THREE.Vector3(),q=new THREE.Quaternion();camera.getWorldPosition(p);camera.getWorldQuaternion(q);
+ const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(q);fwd.y=0;fwd.normalize();panel.position.copy(p).addScaledVector(fwd,1.0);panel.position.y=p.y-0.15;panel.lookAt(p.x,panel.position.y,p.z);drawPanel();}}
+// wrist MENU button on left controller/hand
+function menuButton(){const c=document.createElement('canvas');c.width=256;c.height=128;const g=c.getContext('2d');g.fillStyle='#1e6fd9';g.beginPath();g.roundRect(0,0,256,128,30);g.fill();g.fillStyle='#fff';g.font='bold 64px sans-serif';g.fillText('MENU',30,88);
+ const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;const m=new THREE.Mesh(new THREE.PlaneGeometry(0.12,0.06),new THREE.MeshBasicMaterial({map:t,depthTest:false}));m.renderOrder=11;m.userData.menu=true;return m;}
+// ---------- controllers & hands ----------
+const cmf=new XRControllerModelFactory(),hmf=new XRHandModelFactory();const ctrls=[];
+const ray=new THREE.Raycaster();const tmp=new THREE.Matrix4();
+const marker=new THREE.Mesh(new THREE.RingGeometry(0.18,0.25,40).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({color:0x33aaff,depthTest:false}));marker.renderOrder=9;marker.visible=false;scene.add(marker);
+const menuBtns=[];
+for(let i=0;i<2;i++){const c=renderer.xr.getController(i);
+ const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3(0,0,-1)]),new THREE.LineBasicMaterial({color:0xffffff}));line.scale.z=5;c.add(line);
+ c.addEventListener('connected',e=>{c.userData.src=e.data;c.userData.hand=!!e.data.hand;if(e.data.handedness==='left'){const g=renderer.xr.getControllerGrip(i);const b=menuButton();b.position.set(0,0.05,0.05);b.rotation.x=-Math.PI/3;g.add(b);menuBtns.push(b);}});
+ c.addEventListener('selectstart',()=>{c.userData.sel=true;});
+ c.addEventListener('selectend',()=>{c.userData.sel=false;act(c);});
+ rig.add(c);const g=renderer.xr.getControllerGrip(i);g.add(cmf.createControllerModel(g));rig.add(g);
+ const h=renderer.xr.getHand(i);h.add(hmf.createHandModel(h,'mesh'));rig.add(h);ctrls.push(c);}
+function aim(c){tmp.identity().extractRotation(c.matrixWorld);ray.ray.origin.setFromMatrixPosition(c.matrixWorld);ray.ray.direction.set(0,0,-1).applyMatrix4(tmp);}
+function hitUI(c){aim(c);const objs=[...menuBtns];if(panel.visible)objs.push(panel);const h=ray.intersectObjects(objs,false)[0];return h;}
+function act(c){const h=hitUI(c);
+ if(h){if(h.object.userData.menu){showPanel(!panel.visible);return;}
+  const u=h.uv;const px=u.x*1024,py=(1-u.y)*1024;const it=ITEMS.find(it=>px>it.x&&px<it.x+it.w&&py>it.y&&py<it.y+it.h);if(it){it.a();if(!/Zavrieť/.test(it.t))showPanel(false);}return;}
+ if(marker.visible){const t=marker.position.clone();const hp=new THREE.Vector3();camera.getWorldPosition(hp);rig.position.x+=t.x-hp.x;rig.position.z+=t.z-hp.z;rig.position.y=t.y;}
+ marker.visible=false;}
+function visible(o){while(o){if(!o.visible)return false;o=o.parent;}return true;}
+const clock=new THREE.Clock();
+renderer.setAnimationLoop(()=>{const dt=clock.getDelta();
+ if(renderer.xr.isPresenting){marker.visible=false;
+  for(const c of ctrls){const h=hitUI(c);
+   if(panel.visible){let ch=false;ITEMS.forEach(it=>{const hv=!!(h&&h.object===panel&&(()=>{const px=h.uv.x*1024,py=(1-h.uv.y)*1024;return px>it.x&&px<it.x+it.w&&py>it.y&&py<it.y+it.h})());if(hv!==!!it.hover){it.hover=hv;ch=true;}});if(ch)drawPanel();}
+   if(c.userData.sel&&!h){aim(c);const hit=ray.intersectObjects(floorTargets,false).find(x=>visible(x.object)&&x.face&&x.face.normal.clone().transformDirection(x.object.matrixWorld).y>0.7);if(hit){marker.position.copy(hit.point);marker.visible=true;}}
+   const s=c.userData.src;const g=s&&s.gamepad;if(!g||c.userData.hand)continue;
+   const b=g.buttons[5];if(b){if(b.pressed&&!c.userData.bp)showPanel(!panel.visible);c.userData.bp=b.pressed;}
+   const ax=g.axes[2]||0,ay=g.axes[3]||0;
+   if(s.handedness==='left'){if(Math.abs(ax)>0.2||Math.abs(ay)>0.2){const d=new THREE.Vector3();camera.getWorldDirection(d);d.y=0;d.normalize();const sd=new THREE.Vector3(-d.z,0,d.x);rig.position.addScaledVector(d,-ay*1.4*dt).addScaledVector(sd,ax*1.4*dt);}}
+   else{if(Math.abs(ax)>0.7&&!c.userData.turned){const hp=new THREE.Vector3();camera.getWorldPosition(hp);const a=-Math.sign(ax)*Math.PI/6;
+     rig.position.sub(hp).applyAxisAngle(new THREE.Vector3(0,1,0),a).add(hp);rig.rotation.y+=a;c.userData.turned=true;}if(Math.abs(ax)<0.3)c.userData.turned=false;}}}
+ renderer.render(scene,camera);});
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+// preview camera override for screenshots
+if(P.get('cam')){const c=P.get('cam').split(',').map(Number),l=(P.get('look')||'4,1,4').split(',').map(Number);const iv=setInterval(()=>{if(window.__loaded){camera.position.fromArray(c);orbit.target.fromArray(l);orbit.update();clearInterval(iv);}},50);}
+if(P.get('vrpanel')){const iv=setInterval(()=>{if(window.__loaded){showPanel(true);clearInterval(iv);}},60);}
+buildUI();drawPanel();
+window.setCam=(px,py,pz,lx,ly,lz,fov)=>{orbit.enabled=false;camera.position.set(px,py,pz);camera.lookAt(lx,ly,lz);if(fov){camera.fov=fov;camera.updateProjectionMatrix();}};
+window.frameDone=()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+</script></body></html>

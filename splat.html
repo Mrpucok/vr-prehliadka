@@ -1,0 +1,32 @@
+﻿<!doctype html><html lang="sk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gaussian – obývačka (test)</title>
+<style>body{margin:0;overflow:hidden;background:#000;font-family:sans-serif}#i{position:fixed;top:8px;left:8px;color:#fff;background:#0008;padding:6px 10px;border-radius:6px;font-size:14px}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/","three-mesh-bvh":"https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.1/build/index.module.js","@sparkjsdev/spark":"https://sparkjs.dev/releases/spark/2.4.0/spark.module.js"}}</script>
+</head><body><div id="i">Gaussian – obývačka (test): načítavam…</div>
+<script type="module">
+import * as THREE from 'three';import {VRButton} from 'three/addons/webxr/VRButton.js';import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {SparkRenderer,SplatMesh} from '@sparkjsdev/spark';
+import {Body,Locomotion,loadCollider} from './vrmove.js?v=2';
+const P=new URLSearchParams(location.search);
+// Blender (Z-up) living-room centre C=(6.6,-4.35); three.js after -90deg X rotation -> (6.6, z, 4.35)
+const SC=P.get('scene')||'obyvacka';const SX=parseFloat(P.get('x')||(SC==='prizemie'?'4.75':'6.6')),SZ=parseFloat(P.get('z')||(SC==='prizemie'?'5.6':'4.35')),FL=parseFloat(P.get('floor')||'0'),EYE=1.6;
+const scene=new THREE.Scene();const camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.05,200);
+const renderer=new THREE.WebGLRenderer({antialias:false});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));
+renderer.xr.enabled=true;renderer.xr.setReferenceSpaceType('local-floor');document.body.appendChild(renderer.domElement);document.body.appendChild(VRButton.createButton(renderer));
+scene.add(new SparkRenderer({renderer}));
+const splat=new SplatMesh({url:P.get('src')||(SC==='prizemie'?'splat/prizemie_A.splat':'splat/obyvacka_A.splat'),onLoad:()=>{document.getElementById('i').textContent='Gaussian – obývačka (test) – Enter VR; ľavá páčka = chôdza, pravá = otočenie 30°, spúšť = teleport; steny sú pevné';}});
+splat.rotation.x=-Math.PI/2;scene.add(splat);
+const rig=new THREE.Group();rig.position.set(SX,FL,SZ);scene.add(rig);rig.add(camera);camera.position.set(0,EYE,0);
+const oc=new OrbitControls(camera,renderer.domElement);oc.target.set(0,EYE,-0.01);oc.update();// desktop: look around
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+// collision: invisible house collider exported from the same Blender scene as the splats (same coordinates)
+const FP=(P.get('fp')||'0.35,0.35,8.4,7.65').split(',').map(Number);let loco=null;
+loadCollider(P.get('col')||'walk_real/col_A.bin').then(c=>{loco=new Locomotion({renderer,rig,camera,scene,body:new Body(c,{radius:0.25,footprint:FP}),speed:parseFloat(P.get('speed')||'1.4'),snapDeg:30});window.__loco=loco;if(renderer.xr.isPresenting)loco.init();}).catch(e=>console.warn('collider',e));
+renderer.xr.addEventListener('sessionstart',()=>{oc.enabled=false;camera.position.set(0,0,0);setTimeout(()=>{if(loco)loco.init();},300);});
+renderer.xr.addEventListener('sessionend',()=>{camera.position.set(0,EYE,0);oc.enabled=true;});
+const ctr=[0,1].map(i=>{const c=renderer.xr.getController(i);rig.add(c);c.addEventListener('selectstart',()=>c.userData.sel=true);c.addEventListener('selectend',()=>{c.userData.sel=false;if(loco)loco.doTeleport();});return c;});
+const clock=new THREE.Clock();
+renderer.setAnimationLoop(()=>{const dt=Math.min(clock.getDelta(),0.1);const s=renderer.xr.getSession();
+ if(s&&loco){let arc=false;for(const c of ctr)if(c.userData.sel){arc=true;loco.updateArc(c);}if(!arc)loco.hideArc();loco.update(dt,s.inputSources);}
+ renderer.render(scene,camera);});
+</script></body></html>

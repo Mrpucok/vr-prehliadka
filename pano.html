@@ -1,0 +1,30 @@
+<!doctype html><html lang="sk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>360° stereo panorámy</title>
+<style>body{margin:0;overflow:hidden;font-family:system-ui;background:#000}#ui{position:absolute;top:10px;left:10px;display:flex;gap:8px;flex-wrap:wrap;z-index:5}
+#ui button{font-size:20px;padding:12px 16px;border:0;border-radius:12px;background:#fffe}#ui button.on{background:#1e6fd9;color:#fff}
+#VRButton{font-size:28px!important;padding:22px 44px!important;background:#1e6fd9!important;opacity:1!important;border:0!important;border-radius:16px!important;width:auto!important;white-space:nowrap!important;left:50%!important;transform:translateX(-50%)}
+#help{position:absolute;bottom:100px;left:12px;color:#fff;background:#000a;padding:10px 14px;border-radius:10px;font-size:17px}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script></head>
+<body><div id="ui"></div><div id="help">Stlač <b>VSTÚPIŤ DO VR</b>. V okuliaroch: <b>spúšť / spojenie prstov</b> = ďalšia panoráma. Na počítači: ťahaj myšou.</div>
+<script type="module">
+import * as THREE from 'three';import {VRButton} from 'three/addons/webxr/VRButton.js';import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+const P=new URLSearchParams(location.search);
+// list of [label, file]; add more files as they are rendered
+const PANOS=(P.get('list')||'Obývačka:pano_living_stereo_tb.jpg;Kuchyňa:pano_kitchen_stereo_tb.jpg').split(';').map(s=>s.split(':'));
+let idx=0;const YAW=THREE.MathUtils.degToRad(parseFloat(P.get('yaw')||'0'));
+const r=new THREE.WebGLRenderer({antialias:true});r.setPixelRatio(devicePixelRatio);r.setSize(innerWidth,innerHeight);r.xr.enabled=true;r.xr.setReferenceSpaceType('local');r.outputColorSpace=THREE.SRGBColorSpace;
+document.body.appendChild(r.domElement);const vb=VRButton.createButton(r,{optionalFeatures:['hand-tracking']});document.body.appendChild(vb);
+new MutationObserver(()=>{if(/ENTER VR/.test(vb.textContent))vb.textContent='VSTÚPIŤ DO VR';if(/NOT SUPPORTED/.test(vb.textContent))vb.textContent='VR: otvor v Meta Quest';}).observe(vb,{childList:true,subtree:true,characterData:true});
+const scene=new THREE.Scene();const cam=new THREE.PerspectiveCamera(parseFloat(P.get('fov')||'70'),innerWidth/innerHeight,0.1,100);cam.layers.enable(1);
+const oc=new OrbitControls(cam,r.domElement);cam.position.set(0,0,0.01);oc.enableZoom=false;oc.rotateSpeed=-0.3;oc.update();
+const geo=new THREE.SphereGeometry(50,96,64);geo.scale(-1,1,1);
+const mats=[new THREE.MeshBasicMaterial(),new THREE.MeshBasicMaterial()];
+const L=new THREE.Mesh(geo,mats[0]);L.layers.set(1);const R=new THREE.Mesh(geo,mats[1]);R.layers.set(2);L.rotation.y=R.rotation.y=YAW;scene.add(L,R);
+const tl=new THREE.TextureLoader();
+function load(i){idx=i;tl.load(PANOS[i][1],t=>{t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=8;
+ const a=t,b=t.clone();a.repeat.set(1,0.5);a.offset.set(0,0.5);b.repeat.set(1,0.5);b.offset.set(0,0);a.needsUpdate=b.needsUpdate=true;
+ mats[0].map=a;mats[1].map=b;mats[0].needsUpdate=mats[1].needsUpdate=true;window.__loaded=true;});ui();}
+function ui(){const u=document.getElementById('ui');u.innerHTML='';PANOS.forEach((p,i)=>{const b=document.createElement('button');b.textContent=p[0];if(i===idx)b.className='on';b.onclick=()=>load(i);u.appendChild(b);});}
+for(let i=0;i<2;i++){const c=r.xr.getController(i);c.addEventListener('select',()=>load((idx+1)%PANOS.length));scene.add(c);}
+r.setAnimationLoop(()=>r.render(scene,cam));addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();r.setSize(innerWidth,innerHeight);});
+load(0);
+</script></body></html>
